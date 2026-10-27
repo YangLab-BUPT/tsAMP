@@ -57,64 +57,64 @@ Before beginning, please ensure that your system meets the following requirement
   ```
 
 ---
-
 ## 2. Installation (Step-by-Step)
 
 ### Step 1: Clone the repository
 
-```bash
+~~~bash
 git clone https://github.com/YangLab-BUPT/tsAMP.git
 cd tsAMP
-```
+~~~
 
 ### Step 2: Create the Conda environment
 
-The file `environment.yml` contains all required Python packages (including ESM-1v dependencies). Run:
+The file `environment.yml` contains all required Python packages (including the ESM-1v dependencies). Run:
 
-```bash
-conda env create -f environment.yml
-```
+~~~bash
+conda env create -f environment.yml -n tsAMP
+~~~
 
-This process may take 5–15 minutes depending on your internet speed. When it finishes, you should see a message similar to:
+This may take 5–15 minutes depending on your internet speed. When it finishes, you should see a message similar to:
 
-```
+~~~text
 done
 #
 # To activate this environment, use
 #
 #     $ conda activate tsAMP
-```
+#
+~~~
 
 ### Step 3: Activate the environment
 
 **You must activate this environment every time you open a new terminal before running any tsAMP commands.**
 
-```bash
+~~~bash
 conda activate tsAMP
-```
+~~~
 
 After activation, your terminal prompt should change to show the environment name, for example:
 
-```
+~~~text
 (tsAMP) user@machine:~/tsAMP$
-```
+~~~
 
 ### Step 4: Verify the installation
 
-Run the following commands to confirm everything is properly installed:
+Run the following commands to confirm that everything is properly installed:
 
-```bash
+~~~bash
 python --version
 # Expected output: Python 3.11.x
 
 python -c "import torch; print('PyTorch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
 # Expected output (example):
-# PyTorch version: 2.x.x
-# CUDA available: True    (if you have a GPU; False is acceptable for CPU-only use)
+#   PyTorch version: 2.x.x
+#   CUDA available: True     (if you have a GPU; False is acceptable for CPU-only use)
 
 python -c "import esm; print('ESM imported successfully')"
 # Expected output: ESM imported successfully
-```
+~~~
 
 If any of these commands produce an error, please refer to the [Troubleshooting](#8-troubleshooting) section.
 
@@ -122,42 +122,99 @@ If any of these commands produce an error, please refer to the [Troubleshooting]
 
 ## 3. Feature Extraction with ESM-1v
 
-tsAMP uses the **ESM-1v** protein language model to generate sequence representations. Before running any prediction module, you must first extract features from your peptide sequences.
+tsAMP uses the **ESM-1v** protein language model to turn each peptide sequence into a 1280-dimensional vector. Before running any prediction module, you must extract features from your sequences.
 
-### Step 1: Download the ESM-1v model weights
+Feature extraction is handled by `extract_features.py` in the repository root. The script is self-contained: it does **not** require a checkout of the official ESM repository, only the `fair-esm` package that is already included in `environment.yml`.
 
-The model weights can be obtained from the official ESM repository:
-- Repository: https://github.com/facebookresearch/esm
-- The required model is **ESM-1v** (`esm1v_t33_650M_UR90S`).
+| Setting | Default |
+| --- | --- |
+| Model | `esm1v_t33_650M_UR90S_1` |
+| Layer | 33 (last layer) |
+| Pooling | Mean over residues |
+| Output dimension | 1280 |
 
-If the weights are not downloaded automatically by the script, you may manually download them:
+### Step 1: Prepare your input sequences
 
-```bash
-# The model will be cached to ~/.cache/torch/hub/checkpoints/ by default.
-# Alternatively, you can download manually:
-wget https://dl.fbaipublicfiles.com/fair-esm/models/esm1v_t33_650M_UR90S_1.pt -P ~/.cache/torch/hub/checkpoints/
-```
+Put your peptides in a **FASTA** file. A sample is provided at `data/sample_input.fasta`:
 
-### Step 2: Prepare your input sequences
-
-Place your peptide sequences in **FASTA format** in the designated input directory. A sample input file is provided at `data/sample_input.fasta`. The format should be:
-
-```
+~~~text
 >peptide_1
 GLFDIVKKVVGALLAG
 >peptide_2
 KWKLFKKIEKVGQNIRDGIIK
-```
+~~~
 
-### Step 3: Run feature extraction
+Sequences are cleaned automatically: `*`, gaps and non-standard residues (B, J, O, U, X, Z) are removed, and sequences longer than 1022 residues are truncated.
 
-```bash
-python scripts/extract.py
-```
+### Step 2: Run feature extraction
 
-Extracted features will be saved to the `data/` directory (the exact output path is printed to the terminal upon completion). These feature files are used as input for all three prediction modules.
+~~~bash
+python extract_features.py data/sample_input.fasta data/features/sample_input
+~~~
 
----
+The first argument is the input FASTA file, the second is the output directory.
+
+On the first run, the ESM-1v weights (approximately 2.5 GB) are downloaded automatically to `~/.cache/torch/hub/checkpoints/` and reused afterwards. You can change that location by setting the `TORCH_HOME` environment variable.
+
+Useful options:
+
+~~~bash
+# Also write all embeddings as one table (id + 1280 feature columns)
+python extract_features.py data/sample_input.fasta data/features/sample_input \
+    --csv data/features/sample_input.csv
+
+# Process every .fasta file in a directory, one sub-directory of features per file
+python extract_features.py data/fasta_dir/ data/features/
+
+# Run on CPU only (slow for the 650M model)
+python extract_features.py data/sample_input.fasta data/features/sample_input --nogpu
+
+# See all options
+python extract_features.py --help
+~~~
+
+### Step 3: Check the output
+
+The output directory contains one `.pt` file per sequence, named after its FASTA identifier:
+
+~~~text
+data/features/sample_input/
+├── peptide_1.pt
+└── peptide_2.pt
+~~~
+
+Each file stores the mean representation of layer 33, which you can load with:
+
+~~~python
+import torch
+
+d = torch.load("data/features/sample_input/peptide_1.pt")
+print(d["label"], d["mean_representations"][33].shape)
+# peptide_1 torch.Size([1280])
+~~~
+
+These feature files are the input for all three prediction modules.
+
+### Optional: Manual download of the model weights
+
+If the automatic download fails (for example, on an offline machine), download both files manually:
+
+~~~bash
+mkdir -p ~/.cache/torch/hub/checkpoints/
+
+wget https://dl.fbaipublicfiles.com/fair-esm/models/esm1v_t33_650M_UR90S_1.pt \
+     -P ~/.cache/torch/hub/checkpoints/
+
+wget https://dl.fbaipublicfiles.com/fair-esm/models/esm1v_t33_650M_UR90S_1-contact-regression.pt \
+     -P ~/.cache/torch/hub/checkpoints/
+~~~
+
+Both files are required. Alternatively, pass a local checkpoint directly:
+
+~~~bash
+python extract_features.py input.fasta out/ --model /path/to/esm1v_t33_650M_UR90S_1.pt
+~~~
+
 
 ## 4. Module Usage
 
